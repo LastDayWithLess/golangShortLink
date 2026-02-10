@@ -2,17 +2,16 @@ package rest
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
-	"short_link/internal/logger"
 	"short_link/internal/model"
 	"short_link/internal/service"
 	"strings"
 	"time"
 
-	"github.com/gorilla/mux"
+	"github.com/gin-gonic/gin"
 )
 
 type HTTPHandler struct {
@@ -25,107 +24,97 @@ func NewHTTPHanler(linksServ *service.LinkService) *HTTPHandler {
 	}
 }
 
-func (h *HTTPHandler) SendErrorResponse(w http.ResponseWriter, statusCode int, message string) {
-
-	h.linksServ.Logger.Error(message)
-
-	errDTO := model.ErrorDTO{
-		Message: message,
-		Time:    time.Now(),
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-
-	if err := json.NewEncoder(w).Encode(errDTO); err != nil {
-		h.linksServ.Logger.Error(err.Error())
-	}
-}
-
-func (h *HTTPHandler) HandleCreateShortLink(w http.ResponseWriter, r *http.Request) {
-	contentType := r.Header.Get("Content-Type")
-
-	if !strings.Contains(contentType, "application/json") {
-		h.SendErrorResponse(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
+func (h *HTTPHandler) HandleCreateShortLink(c *gin.Context) {
+	contentType := c.Request.Header.Get("Content-Type")
+	if !strings.HasPrefix(contentType, "application/json") {
+		c.JSON(http.StatusUnsupportedMediaType, gin.H{
+			"success":  false,
+			"error":    "Unsupported Media Type",
+			"message":  "Content-Type must be application/json",
+			"received": contentType,
+			"expected": "application/json",
+		})
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
+	var req model.LinkDTO
 
-	var linkDTO model.LinkDTO
-
-	if err := json.NewDecoder(r.Body).Decode(&linkDTO); err != nil {
-		h.SendErrorResponse(w, http.StatusBadRequest, err.Error())
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request format",
+			"details": err.Error(),
+		})
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	link, err := h.linksServ.Create(ctx, linkDTO.URL)
-
+	link, err := h.linksServ.Create(ctx, req.URL)
 	if err != nil {
-		h.SendErrorResponse(w, http.StatusBadRequest, err.Error())
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid request format",
+			"details": err.Error(),
+		})
 		return
 	}
 
 	fullURL := &url.URL{
 		Scheme: "http",
-		Host:   r.Host,
-		Path:   r.URL.Path + "/" + link.ShortURL,
+		Host:   c.Request.Host,
+		Path:   c.Request.URL.Path + "/" + link.ShortURL,
 	}
 
 	link.ShortURL = fullURL.String()
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-
-	if err := json.NewEncoder(w).Encode(link); err != nil {
-		h.linksServ.Logger.Error(err.Error(), logger.String("original_url", link.URL), logger.String("short_url", link.ShortURL))
-	}
-
+	c.JSON(http.StatusCreated, link)
 }
 
-func (h *HTTPHandler) HandleGetAllShortLink(w http.ResponseWriter, r *http.Request) {
+func (h *HTTPHandler) HandleGetAllShortLink(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	links, err := h.linksServ.GetAllShortLink(ctx)
-
 	if err != nil {
-		h.linksServ.Logger.Error(err.Error())
+		c.JSON(http.StatusNotFound, gin.H{
+			"error":   "link not found",
+			"details": err.Error(),
+		})
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-
-	if err := json.NewEncoder(w).Encode(links); err != nil {
-		h.linksServ.Logger.Error(err.Error())
-	}
+	c.JSON(http.StatusOK, links)
 }
 
-func (h *HTTPHandler) HandleRedirection(w http.ResponseWriter, r *http.Request) {
+func (h *HTTPHandler) HandleRedirection(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	shortLink := mux.Vars(r)["shortLink"]
-
+	shortLink := c.Param("shortLink")
 	if shortLink == "" {
-		h.SendErrorResponse(w, http.StatusBadRequest, "Short link is required")
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Short link is required",
+		})
 		return
 	}
 
 	link, err := h.linksServ.GetOriginalLink(ctx, shortLink)
-
 	if err != nil {
 		if errors.Is(err, service.ErrLinkBadRequest) {
-			h.SendErrorResponse(w, http.StatusBadRequest, err.Error())
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "bad request",
+				"details": err.Error(),
+			})
 		} else {
-			h.SendErrorResponse(w, http.StatusInternalServerError, "Failed to get original link")
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":   "Failed to get original link",
+				"details": err.Error(),
+			})
 		}
 		return
 	}
 
-	http.Redirect(w, r, *link, http.StatusFound)
+	fmt.Println(link)
+
+	c.Redirect(http.StatusMovedPermanently, *link)
 }

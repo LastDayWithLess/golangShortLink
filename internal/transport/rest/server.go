@@ -1,10 +1,7 @@
 package rest
 
 import (
-	"errors"
-	"net/http"
-
-	"github.com/gorilla/mux"
+	"github.com/gin-gonic/gin"
 )
 
 type HTTPServer struct {
@@ -18,19 +15,16 @@ func NewServer(httpHandler *HTTPHandler) *HTTPServer {
 }
 
 func (s *HTTPServer) StartServer() error {
-	router := mux.NewRouter()
 
-	router.Path("/oneLink").Methods("POST").HandlerFunc(s.httpHandler.HandleCreateShortLink)
-	router.Path("/oneLink").Methods("GET").HandlerFunc(s.httpHandler.HandleGetAllShortLink)
-	router.Path("/oneLink/{shortLink}").Methods("GET").HandlerFunc(s.httpHandler.HandleRedirection)
+	gin.SetMode(gin.ReleaseMode)
 
-	if err := http.ListenAndServe(":8080", router); err != nil {
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
+	router := gin.Default()
 
-		return err
-	}
+	router.POST("/oneLink", s.httpHandler.HandleCreateShortLink)
+	router.GET("/oneLink", s.httpHandler.HandleGetAllShortLink)
+	router.GET("/oneLink/:shortLink", s.httpHandler.HandleRedirection)
+
+	router.Run(":8080")
 
 	return nil
 }
